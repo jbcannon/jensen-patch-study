@@ -1,0 +1,564 @@
+---
+title: "Jensen fire analysis"
+author: "JB Cannon"
+date: "2024-09-01"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(lmerTest)
+
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+
+# function to convert photoload classes to values
+apply_photoload = function(x) ifelse(x==0, 0, x*100 - 50)
+reverse_photoload = function(x) {
+  x = cut(x, breaks = c(-1, 1, 100, 200, 300, 1e8),
+          labels = c('< 1', '1 - 100', '100 - 200', '200 - 300', '≥300'),
+          right = FALSE)
+  return(x)
+}
+
+df = read_csv('Patch_fulldata2.1.csv')
+df = df %>% mutate(Patch = as.factor(Patch),
+                   grass_photo = apply_photoload(round(grass_photo)),
+                   needle_photo = apply_photoload(round(needle_photo)))
+levels(df$Patch) = c('Patch', 'Single tree')
+```
+  
+
+```{r photoload-analysis, fig.width = 6, fig.height=3}
+
+photoload_df = read_csv('photoload-harvest-data.csv')
+photoload_df =  photoload_df %>%
+  select(!contains('oak')) %>%
+  mutate(plot = 1:nrow(photoload_df)) %>%
+  pivot_longer(`grass-harvest-g`:`needle-ocular`) %>%
+  mutate(method = ifelse(grepl('harvest', name), 'harvest', 'ocular'),
+         fuel = gsub('-harvest-g|-ocular','', name)) %>%
+  select(!name) %>%
+  pivot_wider(id_cols = c(project, plot, fuel), names_from = method) %>%
+  mutate(ocular_class = round(ocular),
+         ocular = apply_photoload(ocular_class),
+         ocular_class = reverse_photoload(ocular),
+         harvest_class = reverse_photoload(harvest))
+
+needle_conf = photoload_df %>% filter(fuel == 'needle') %>% na.omit %>%
+  select(contains('class')) %>% table()
+names(dimnames(needle_conf)) = c('Visual estimate', 'Harvest weight (classified)')
+
+grass_conf = photoload_df %>% filter(fuel == 'grass') %>% na.omit %>%
+  select(contains('class')) %>% table()
+names(dimnames(grass_conf)) = c('Visual estimate', 'Harvest weight (classified)')
+
+#combine confusion matrices & output
+confusion_matrix = grass_conf + needle_conf
+write_csv((as.data.frame.array(needle_conf)), 'figs/conf_needle.csv')
+write_csv(as.data.frame.array(grass_conf), 'figs/conf_grass.csv')
+write_csv(as.data.frame.array(confusion_matrix), 'figs/conf_combined.csv')
+
+grass_conf
+needle_conf
+confusion_matrix
+
+# Kappa coefficients
+kappa_df = photoload_df %>% mutate(class1 = as.numeric(as.factor(ocular_class)), 
+                                   class2 = as.numeric(as.factor(harvest_class)))
+kappa_df %>% filter(fuel == 'grass') %>%
+  select(class1, class2) %>% as.matrix %>% irr::kappa2()
+
+# Kappa for needles
+kappa_df %>% filter(fuel == 'needle') %>%
+  select(class1, class2) %>% as.matrix %>% irr::kappa2()
+
+# Kappa for combined
+kappa_df %>% select(class1, class2) %>% as.matrix %>% irr::kappa2()
+
+## Figure for fuel accuracy
+photoload_df %>%
+  na.omit %>%
+  mutate(fuel = ifelse(fuel=='grass', 'Herbaceous', 'Needle-cast')) %>%
+  ggplot(aes(x = ocular_class, y = harvest)) + 
+  geom_boxplot(outlier.shape = NA, color=grey(0.5)) +
+  geom_jitter(width = 0.15, alpha = 0.5) +
+  facet_wrap(~fuel) +
+  theme_bw() +
+  scale_y_continuous(breaks = seq(0,600,100)) + 
+  labs(x = 'Photoload estimate (g)', y = 'Fuel mass (g)') +
+  theme(axis.text.x = element_text(angle = -15, vjust = 0.5))
+ggsave('figs/photoload.jpg', dpi = 600, width = 6, height=3)
+ggsave('figs/photoload.pdf', dpi = 600, width = 6, height=3)
+
+```
+
+```{r fuels-analysis}        
+# Comparison of harvest/ocular measurements of fine fuels at 10 m location
+
+fuels = df %>% select(Tag:Totalclip) %>% select(!TEN_HOUR) %>%
+  select(!TotalFF) %>% mutate(Total_photo = grass_photo + needle_photo) %>%
+  pivot_longer(c(grass_photo:Totalclip, Total_photo)) %>%
+  mutate(Method = ifelse(grepl('photo', name), 'Ocular', 'Harvest'),
+         `Fuel type` = name) %>%
+  mutate(`Fuel type` = ifelse(grepl('GRASS|grass', `Fuel type`), 'Herbaceous fuel', `Fuel type`)) %>%
+  mutate(`Fuel type` = ifelse(grepl('needle|NEEDLE', `Fuel type`), 'Needle-cast', `Fuel type`)) %>%
+  mutate(`Fuel type` = ifelse(grepl('Total', `Fuel type`), 'Total fine fuels', `Fuel type`))
+ 
+```
+
+
+```{r fuel-summary}
+# Get average fuel loading for herbs
+fuels %>% filter(Method == 'Ocular', `Fuel type` == 'Herbaceous fuel') %>%
+  group_by(Patch) %>%
+  summarize(mean = mean(value, na.rm=TRUE))
+
+# Get average of needle fuel loading in the CENTERS
+fuels %>% filter(Method == 'Ocular', `Fuel type` == 'Needle-cast' & Location == 10) %>%
+  group_by(Patch) %>%
+  summarize(mean = mean(value, na.rm=TRUE))
+
+# Get average fuel loading for herbs
+fuels %>% filter(Method == 'Ocular', `Fuel type` == 'Total fine fuels') %>%
+  group_by(Patch) %>%
+  summarize(mean = mean(value, na.rm=TRUE))
+```
+
+```{r fuels.transects, fig.width = 8, fig.height = 3}
+cols = c('#7fbf7b', '#af8dc3')
+alphabox = 0.5
+# Comparison of ocular measurements of fuels along transects for patches and signle trees
+fuels.transect.fig = fuels %>% group_by(Patch, name, Method, `Fuel type`, Location) %>%
+  summarize(mean = mean(value, na.rm=TRUE), se = sd(value, na.rm=TRUE)/sqrt(sum(!is.na(value)))) %>%
+  na.omit %>%
+  mutate(upper = mean + 1.65*se, lower = mean - 1.65*se) %>%
+  filter(Method == 'Ocular') %>%
+  ggplot(aes(x=Location, color = Patch, y = mean)) + geom_point() + geom_line() +
+  geom_ribbon(aes(ymin = lower, ymax=upper, fill = Patch), color=NA, alpha=alphabox) + 
+  facet_wrap(~`Fuel type`) +
+  lims(y = c(0,500)) + 
+  scale_fill_manual(values = cols) +
+  scale_color_manual(values = cols) +
+  labs(color=element_blank(), fill = element_blank(), x = 'Transect position (m)', y = expression(Fuel~loading~(g*m^-2))) +
+  theme_bw() +
+  theme(legend.position = c(0.1, 0.8), legend.background = element_blank()) +
+  theme(strip.text.x = element_blank(),
+        strip.background = element_rect(fill = "white", color = "white")) +
+  geom_text(data = fuels %>% group_by(`Fuel type`) %>%
+              slice(1) %>% ungroup %>%
+              mutate(label = paste0(c('A', 'B', 'C'), '. ', `Fuel type`)), 
+          aes(label = label, x = 1, y = 500, hjust='left'), color = "black")
+
+fuels.transect.fig
+ggsave('figs/fuels.transect.jpg', fuels.transect.fig, width=8, height = 3, dpi = 600)
+ggsave('figs/fuels.transect.pdf', fuels.transect.fig, width=8, height = 3, dpi = 600)
+
+```
+
+```{r fuels.transect.stats, fig.width=8, fig.height = 3}
+
+# Create difference data (patch - single) for fuel types
+fuels.transect.diff = fuels %>% filter(Method == 'Ocular') %>%
+  group_by(Tag, Location, `Fuel type`) %>%
+  arrange(Patch) %>%
+  summarize(diff = value[1] - value[2]) #patch - single
+
+mod.fuels.herb = fuels.transect.diff %>% filter(`Fuel type` == 'Herbaceous fuel') %>%
+  lmer(formula = diff ~ Location + I(Location^2) + (1|Tag))
+mod.fuels.herb %>% summary
+
+mod.fuels.needle = fuels.transect.diff %>% filter(`Fuel type` == 'Needle-cast') %>%
+  lmer(formula = diff ~ Location + I(Location^2) + (1|Tag))
+mod.fuels.needle %>% summary
+
+mod.fuels.total = fuels.transect.diff %>% filter(`Fuel type` == 'Total fine fuels') %>%
+  lmer(formula = diff ~ Location + I(Location^2) + (1|Tag))
+mod.fuels.total %>% summary
+
+a = fuels.transect.diff %>% filter(`Fuel type` == 'Herbaceous fuel')
+coefs = apply(coef(mod.fuels.herb)$Tag,2,mean)
+a = ggplot(a, aes(x = Location, y = diff)) + 
+  geom_point(color=grey(0.7)) + 
+  geom_line(aes(group=Tag), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Δ Herbaceous fuel (g)') +
+  geom_hline(yintercept = coefs[1], color='blue', linewidth=1.0) +
+  geom_hline(yintercept = 0, linetype='dashed')
+
+b = fuels.transect.diff %>% filter(`Fuel type` == 'Needle-cast')
+coefs = apply(coef(mod.fuels.needle)$Tag,2,mean)
+newdf = data.frame(Location = seq(1,20,by=0.1))
+newdf$diff = coefs[1] + coefs[2]*newdf$Location + coefs[3]*newdf$Location^2
+b = ggplot(b, aes(x = Location, y = diff)) + 
+  geom_point(color=grey(0.7)) + 
+  geom_line(aes(group=Tag), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Δ Needle-cast fuel (g)') +
+  geom_line(data=newdf, color='blue', linewidth=1.0) +
+  geom_hline(yintercept = 0, linetype='dashed')
+
+c = fuels.transect.diff %>% filter(`Fuel type` == 'Total fine fuels')
+coefs = apply(coef(mod.fuels.total)$Tag,2,mean)
+newdf = data.frame(Location = seq(1,20,by=0.1))
+newdf$diff = coefs[1] + coefs[2]*newdf$Location + coefs[3]*newdf$Location^2
+c = ggplot(c, aes(x = Location, y = diff)) + 
+  geom_point(color=grey(0.7)) + 
+  geom_line(aes(group=Tag), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Δ Total fine fuel (g)') +
+  geom_line(data=newdf, color='blue', linewidth=1.0) +
+  geom_hline(yintercept = 0, linetype='dashed')
+
+fuels.transect.diff.fig = ggpubr::ggarrange(a,b,c, nrow = 1)
+fuels.transect.diff.fig 
+ggsave('figs/fuels.transect.diff.jpg', fuels.transect.diff.fig, width=8, height = 3, dpi = 600)
+ggsave('figs/fuels.transect.diff.pdf', fuels.transect.diff.fig, width=8, height = 3, dpi = 600)
+
+```
+
+```{r fire-analysis}
+#Subset and summarize fire behavior dataset
+fire.full = df %>% filter(Location %in% c(1,5,10,15,20) & Tag > 10) %>%
+  select(Tag:Location, RES_TIME:temp_dose) %>%
+  select(!Ave_Temp:date) %>%
+  pivot_longer(RES_TIME:temp_dose)
+
+```
+
+```{r, fire.transect.fig, fig.width=8, fig.height=3}
+
+fire = fire.full %>% group_by(Patch, Location, name) %>%
+  summarize(mean = mean(value, na.rm=TRUE), se = sd(value, na.rm=TRUE) / sqrt(sum(!is.na(value)))) %>%
+  mutate(upper = mean + 1.65*se, lower = mean - 1.65*se)
+
+# summary of fire metrics overall
+fire.full %>% group_by(name) %>% summarize(mean = mean(value, na.rm=TRUE))
+# summary of fire metrics for patches
+fire.full %>% group_by(name, Patch) %>% summarize(mean = mean(value, na.rm=TRUE))
+
+# Comparison of fire behavior metrics (max T, Residence time, and time-temp index)
+# along transects in patches and single tree
+fire.fig.a = fire %>% filter(name == 'Max_Temp') %>%
+  ggplot(aes(x = Location, y = mean, color = Patch)) +  
+  geom_point() + geom_line() + 
+  geom_ribbon(aes(ymin=lower, ymax=upper, fill=Patch), alpha=0.3, color=NA) +
+  lims(y = c(0,750)) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  theme_bw()  +
+  theme(legend.position = 'none') +
+  labs(y =  expression(Max~temperature*" ("*{degree}*C*")"), x = ' ') 
+
+fire.fig.b = fire %>% filter(name == 'RES_TIME') %>%
+  ggplot(aes(x = Location, y = mean, color = Patch)) +  
+  geom_point() + geom_line() + 
+  geom_ribbon(aes(ymin=lower, ymax=upper, fill=Patch), alpha=0.3, color=NA) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  lims(y = c(0,450)) +
+  theme_bw()  +
+  theme(legend.position = c(0.3, 0.85), legend.background = element_blank()) +
+  labs(y =  'Residence time (s)', x = 'Transect position (m)',
+       color = element_blank(), fill=element_blank()) 
+
+fire.fig.c = fire %>% filter(name == 'temp_dose') %>%
+  ggplot(aes(x = Location, y = mean, color = Patch)) +  
+  geom_point() + geom_line() + 
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  geom_ribbon(aes(ymin=lower, ymax=upper, fill=Patch), alpha=0.3, color=NA) +
+  lims(y = c(0,30000)) +
+  theme_bw()  +
+  theme(legend.position = 'none') +
+  labs(y =  expression(Time-temperature~index*" ("*{degree}*C~s*")"), x = ' ') 
+
+fire.transect = ggpubr::ggarrange(fire.fig.a, fire.fig.b, fire.fig.c,
+                                  labels = LETTERS, nrow=1, font.label = list(size=11))
+fire.transect
+ggsave('figs/fire.transect.jpg', fire.transect, width=8, height = 3, dpi = 600)
+ggsave('figs/fire.transect.pdf', fire.transect, width=8, height = 3, dpi = 600)
+
+```
+
+
+```{r fire.difference.tests, fig.width=8, fig.height=3}
+# Create difference data (patch - single) for fuel types
+fire.diff = fire.full %>% 
+  group_by(Tag, Location, name) %>%
+  arrange(Patch) %>% 
+  summarize(diff = value[1] - value[2])  %>% #patch - single
+  na.omit
+
+mod.firetemp = fire.diff %>% filter(name == 'Max_Temp') %>% 
+  lmer(formula = diff ~ Location + I(Location^2) + (1|Tag))
+mod.firetemp %>% summary
+
+mod.fireres = fire.diff %>% filter(name == 'RES_TIME') %>% 
+  lmer(formula = diff ~ Location + I(Location^2) + (1|Tag))
+mod.fireres %>% summary
+
+mod.firedose = fire.diff %>% filter(name == 'temp_dose') %>% 
+  lmer(formula = diff ~ Location + I(Location^2) + (1|Tag))
+mod.firedose %>% summary
+
+a = fire.diff %>% filter(`name` == 'Max_Temp')
+a = ggplot(a, aes(x = Location, y = diff)) + 
+  geom_point(color=grey(0.7)) + 
+  geom_line(aes(group=Tag), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = expression(Delta~Maximum~temperature*" ("*{degree}*C*")"))
+
+b = fire.diff %>% filter(`name` == 'RES_TIME')
+coefs = apply(coef(mod.fireres)$Tag,2,mean)
+newdf = data.frame(Location = seq(1,20,by=0.1))
+newdf$diff = coefs[1] + coefs[2]*newdf$Location + coefs[3]*newdf$Location^2
+b = ggplot(b, aes(x = Location, y = diff)) + 
+  geom_point(color=grey(0.7)) + 
+  geom_line(aes(group=Tag), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Δ Residence time (s)') +
+  geom_line(data=newdf, color='blue', linewidth=1.0)
+
+c = fire.diff %>% filter(`name` == 'temp_dose')
+coefs = apply(coef(mod.firedose)$Tag,2,mean)
+newdf = data.frame(Location = seq(1,20,by=0.1))
+newdf$diff = coefs[1] + coefs[2]*newdf$Location + coefs[3]*newdf$Location^2
+c =ggplot(c, aes(x = Location, y = diff)) + 
+  geom_point(color=grey(0.7)) + 
+  geom_line(aes(group=Tag), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y=expression(~Delta~Time-temperature~index*" ("*{degree}*C~s*")")) +
+  geom_line(data=newdf, color='blue', linewidth=1.0)
+
+fire.transect.diff.fig = ggpubr::ggarrange(a,b,c, nrow = 1)
+fire.transect.diff.fig
+ggsave('figs/fire.transect.diff.jpg', fire.transect.diff.fig, width=8, height = 3, dpi = 600)
+ggsave('figs/fire.transect.diff.pdf', fire.transect.diff.fig, width=8, height = 3, dpi = 600)
+```
+
+```{r effects-analysis, fig.height=4, fig.width=8}
+# Summarize fire effects data (scorch, char, maximum bark temp, resisdence time in bark, time-temp index in bark)
+effects = df %>% filter(Tag > 10) %>%
+  select(Tag:Location, MaxTempBark, RESTIMEBark, TempDoseBark)
+
+# Bring in clean transect data since his plot level summaries were wrong. 
+transect_data = read_csv('fire-effects-transect-data.csv')
+transect_data = transect_data %>% select(Stand:Height, `% Crown Scorch`, `% Crown Char`)
+colnames(transect_data) = c('Stand', 'Patch', 'position', 'height', 'scorch', 'char')
+transect_data$Patch = as.factor(transect_data$Patch)
+levels(transect_data$Patch) = c('Patch', 'Single tree')
+transect_data = transect_data %>% mutate(char_ht = char * height / 100,
+                   scorch_ht = scorch * height / 100)
+transect_data$Stand = as.factor(transect_data$Stand)
+
+transect_data.centers = transect_data %>% filter(Patch == 'Single tree' | (Patch == 'Patch' & position > 9.5 & position < 10.5))
+transect_data.centers = transect_data.centers %>%
+  select(Stand:Patch, scorch:char) %>%
+  group_by(Stand, Patch) %>%
+  summarize(scorch = mean(scorch),
+            char = mean(char))
+
+# Subset to center locations
+effects.center = effects %>% filter(Location == 10)
+
+effects.center %>% group_by(Patch) %>%
+  summarize(maxT = mean(MaxTempBark, na.rm=TRUE),
+            resT = mean(RESTIMEBark, na.rm=TRUE),
+            Tdose = mean(TempDoseBark, na.rm=TRUE))
+
+transect_data.centers %>% group_by(Patch)  %>%
+  summarize(Scorch = mean(scorch),
+            Char = mean(char))
+
+effects.center %>% group_by(.) %>%
+  summarize(maxT = mean(MaxTempBark, na.rm=TRUE),
+            resT = mean(RESTIMEBark, na.rm=TRUE),
+            Tdose = mean(TempDoseBark, na.rm=TRUE))
+
+transect_data.centers %>% group_by(.)  %>%
+  summarize(Scorch = mean(scorch),
+            Char = mean(char))
+
+effects.fig.a = transect_data.centers  %>%
+  ggplot(aes(x = Patch, y = scorch, fill = Patch)) + 
+  geom_boxplot(alpha=alphabox, outlier.shape = NA) + geom_jitter(aes(fill=Patch), shape = 21, color='black', width = 0.2) +
+  lims(y = c(0,100)) + theme_bw() + theme(legend.position ='none') +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  stat_summary(fun = "mean", geom = "point", shape=16, size=2) + 
+  labs(y = 'Crown scorch (%)', x = element_blank()) +
+  theme(axis.text.x = element_text(angle = -15, vjust = 0.5))
+
+
+effects.fig.b = transect_data.centers %>% 
+  ggplot(aes(x = Patch, y = char, fill = Patch)) + 
+  geom_boxplot(alpha=alphabox, outlier.shape = NA) + geom_jitter(aes(fill=Patch), shape = 21, color='black', width = 0.2) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  lims(y = c(0,100)) + theme_bw() + theme(legend.position ='none') +
+  stat_summary(fun = "mean", geom = "point", shape=16, size=2) + 
+  labs(y = 'Crown consumption (%)', x = element_blank()) +
+  theme(axis.text.x = element_text(angle = -15, vjust = 0.5))
+
+effects.fig.c = effects.center %>% 
+  ggplot(aes(x = Patch, y = MaxTempBark, fill = Patch)) +
+  geom_boxplot(alpha=alphabox, outlier.shape = NA) + geom_jitter(aes(fill=Patch), shape = 21, color='black', width = 0.2) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  theme_bw() + theme(legend.position ='none') +
+  stat_summary(fun = "mean", geom = "point", shape=16, size=2) + 
+  labs(y = expression(Cambium~maximum~temperature~({degree}*C)), x = element_blank()) +
+  theme(axis.text.x = element_text(angle = -15, vjust = 0.5))
+
+effects.fig.d = effects.center %>% 
+  ggplot(aes(x = Patch, y = RESTIMEBark, fill = Patch)) +
+  geom_boxplot(alpha=alphabox, outlier.shape = NA) + geom_jitter(aes(fill=Patch), shape = 21, color='black', width = 0.2) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  theme_bw() + theme(legend.position ='none') +
+  stat_summary(fun = "mean", geom = "point", shape=16, size=2) + 
+  labs(y = 'Cambium residence time (s)', x = element_blank()) +
+  theme(axis.text.x = element_text(angle = -15, vjust = 0.5))
+
+effects.fig.e = effects.center %>% 
+  ggplot(aes(x = Patch, y = TempDoseBark, fill = Patch)) +
+  geom_boxplot(alpha=alphabox, outlier.shape = NA) + geom_jitter(aes(fill=Patch), shape = 21, color='black', width = 0.2) +
+  scale_color_manual(values = cols) +
+  scale_fill_manual(values = cols) +
+  theme_bw() + theme(legend.position ='none') +
+  stat_summary(fun = "mean", geom = "point", shape=16, size=2) + 
+  labs(y = expression(Cambium~time-temperature~index~({degree}*C~s)), x = element_blank()) +
+  theme(axis.text.x = element_text(angle = -15, vjust = 0.5))
+
+effects.center.fig = ggpubr::ggarrange(effects.fig.a, effects.fig.b, effects.fig.c, 
+                  effects.fig.d, effects.fig.e, nrow=1, ncol=5,
+                  labels=LETTERS, font.label = list(size=11))
+effects.center.fig
+ggsave('figs/effects.center.jpg', effects.center.fig, height=4, width=8, dpi=600)
+ggsave('figs/effects.center.pdf', effects.center.fig, height=4, width=8, dpi=600)
+```
+
+```{r, effects.diff.center}
+# Create difference data (patch - single) for fire effects
+effects.diff = effects %>% filter(Tag > 10) %>% 
+  filter(Location == 10) %>%
+  select(Tag:Location,MaxTempBark:TempDoseBark) %>%
+  pivot_longer(MaxTempBark:TempDoseBark) %>% 
+  group_by(Tag, Location, name) %>%
+  arrange(name) %>%
+  summarize(diff = value[1] - value[2])
+
+# Use a t-test to test for differences between Patches and single tree fire effects
+effects.diff %>% filter(name == 'MaxTempBark') %>% 
+  pull(diff) %>% t.test(alternative= 'less')
+
+effects.diff %>% filter(name == 'RESTIMEBark') %>% 
+  pull(diff) %>% t.test(alternative= 'less')
+
+effects.diff %>% filter(name == 'TempDoseBark') %>% 
+  pull(diff) %>% t.test(alternative= 'less')
+
+# summarize differences in scorch/char from transect data
+effects.diff2 = transect_data.centers %>%
+  pivot_longer(scorch:char) %>%
+  group_by(Stand, name) %>%
+  arrange(name) %>%
+  summarize(diff = value[1] - value[2])
+
+effects.diff2 %>% filter(name == 'scorch') %>% 
+  pull(diff) %>% t.test(alternative= 'less')
+
+effects.diff2 %>% filter(name == 'char') %>% 
+  pull(diff) %>% t.test(alternative= 'less')
+
+```
+
+```{r sapling-scorch-figure, fig.height=4, fig.width = 6}
+transect_data$Stand = as.factor(transect_data$Stand)
+levels(transect_data$Stand) = paste('Transect ', 1:length(levels(transect_data$Stand)))
+
+jitr = position_jitter(width = 1e-2, height=0, seed = 10)
+sapling.scorch.fig = transect_data %>% 
+  filter(Patch == 'Patch') %>% 
+  ggplot(aes(x = position)) + 
+  geom_col(aes(y=height, fill = 'Sapling height'), position=jitr, width=0.5) +
+  geom_col(aes(y=scorch_ht, fill = 'Scorch height'), position=jitr, width = 0.5, alpha=0.8, color=NA) + 
+  geom_col(aes(y=char_ht, fill = 'Consumption height'), position=jitr, width = 0.5, alpha=0.8, color=NA) +
+#  facet_wrap(~Stand, scales='free_y') +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Height (m)') +
+  scale_fill_manual(name = element_blank(), 
+                    breaks = c('Sapling height', 'Scorch height', 'Consumption height'),
+                    values = c('Scorch height' = 'chocolate4', 'Sapling height' = 'chartreuse4', 'Consumption height' = grey(0.1))) +
+  theme(legend.position = c(0.2, 0.9), legend.background = element_blank()) +
+    lims(y = c(-0.1,15))
+sapling.scorch.fig
+ggsave('figs/sapling.scorch.jpg', height = 4, width = 6, dpi = 600)
+ggsave('figs/sapling.scorch.pdf', height = 4, width = 6, dpi = 600)
+
+```
+
+
+```{r, scorch-char-transect-lmer, fig.width=8, fig.height=3}
+
+df = transect_data
+
+mod.eff.scorch = df %>% filter(Patch == 'Patch') %>%
+  lmer(formula = scorch ~ position + I(position^2) + (1|Stand))
+mod.eff.scorch %>% summary()
+
+mod.eff.char = df %>% filter(Patch == 'Patch') %>%
+  lmer(formula = char ~ position + I(position^2) + (1|Stand))
+mod.eff.char %>% summary()
+
+tmp = df %>% filter(Patch == 'Patch')
+coefs = apply(coef(mod.eff.scorch)$Stand, 2, 'mean')
+newdf = data.frame(position = seq(1,20,by=0.1))
+newdf$scorch = coefs[1] + coefs[2]*newdf$position + coefs[3]*newdf$position^2
+a = ggplot(tmp, aes(x = position, y = scorch)) +
+  geom_point(color=grey(0.7)) +
+  geom_line(aes(group=Stand), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Canopy scorch (%)') +
+  geom_line(data=newdf, color='blue', linewidth=1.0) +
+  lims(y = c(0,100))
+
+tmp = df %>% filter(Patch == 'Patch')
+coefs = apply(coef(mod.eff.char)$Stand, 2, 'mean')
+newdf = data.frame(position = seq(1,20,by=0.1))
+newdf$char = coefs[1] + coefs[2]*newdf$position + coefs[3]*newdf$position^2
+b = ggplot(tmp, aes(x = position, y = char)) +
+  geom_point(color=grey(0.7)) +
+  geom_line(aes(group=Stand), color=grey(0.7)) +
+  theme_bw() +
+  labs(x = 'Transect position (m)', y = 'Canopy consumption (%)') +
+  geom_line(data=newdf, color='blue', linewidth=1.0) +
+  lims(y = c(0,100))
+
+scorch.eff.fig = ggpubr::ggarrange(a,b)
+scorch.eff.fig
+ggsave('figs/scorch.lmer.jpg', scorch.eff.fig, height=3, width=6, dpi = 600)
+ggsave('figs/scorch.lmer.pdf', scorch.eff.fig, height=3, width=6, dpi = 600)
+
+```
+
+
+```{r coef-export}
+
+mods = c('mod.fuels.herb', 'mod.fuels.needle', 'mod.fuels.total',
+         'mod.firetemp', 'mod.fireres', 'mod.firedose', 
+         'mod.eff.scorch', 'mod.eff.char')
+mod_output = do.call(rbind, lapply(mods, function(i) {
+  mod = get(i)
+  df = as.data.frame(coef(summary(mod))[,c(1,2,5)])
+  df = cbind(df[1,], df[2,], df[3,])
+  df = cbind(data.frame(var = i), df)
+  rownames(df) = NULL
+  return(df)
+}))
+print(mod_output)
+write_csv(mod_output, 'figs/transect_mod_output.csv')
+```
+
+
+

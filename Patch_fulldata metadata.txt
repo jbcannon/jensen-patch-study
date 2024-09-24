@@ -1,0 +1,33 @@
+Transect 	Paired Sample ID (1 per patch and Single Tree Pair)	
+Burn_y_n	If the sample was burned 
+Regen		Regeneration Type
+Location	Where on the paired transect the sample is spatially in meters
+grass_photo	The attributed herbaceous bin ocularly estimated 0=0g,1=.01-100g,2=100.01g-200g,3=200.1g-300g,4=300g+
+needle_photo	The same as above for needle cast
+GRASS_LOAD	Herbaceous fuel loading in grams (if D. Sampled)
+NEEDLE_LOAD	Needlecast fuel loading in grams (if D. Sampled)
+TEN_HOUR	Ten hour and less woody fuels in grams (if D. sampled)
+TotalFF		Herbaceous + Need cast in grams 
+Totalclip	Total D. sampled weight in grams
+loggerSN.x	Ambient thermocouple ID
+burn_during_Fire If thermocouple reached 40 dec C (went into burst mode) 	
+RES_TIME	Time in seconds above 40 deg C
+Max_Temp	Max Temp in C reached by thermocouple
+Ave_Temp	Average temp thermocouple reached during fire in C 
+date		Date logger recorded 
+temp_dose	summation of the curve in Celsius seconds per second
+FMC		Fuel moisture content of fuel sample at transect location
+Trees_5m_density Count of trees in 5 meter radius of transect location (2.5 meters inward for location 1, 20)  		
+Tree_5m_MAXht	Max height of tree in radius in meters 
+Trees_avg_ht_5m	Average height of trees in radius in meters
+avg_SH_5m	Average scorch height of trees in radius in meters
+max_SH_5m	Max scorch height of trees in radius in meters
+avg_CH_5m	Average char height of trees in radius in meters 
+max_CH_5m	Max char height of trees in radius in meters
+Transect_Total_Treecounts	Total Tree count of transects 
+loggerSN.y	In-bark logger ID
+InBarkBurn	If the logger detected temperatures above 40 deg C
+RESTIMEBark	Time in seconds above 40 C for the cambium
+MaxTempBark	Max temp the cambium achieved during fire in C
+AveTempBark	Average temp the cambium achieved during fire in C 
+TempDoseBark    Time above 40 C summed in C per second per second for the cambium
